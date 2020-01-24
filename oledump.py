@@ -57,7 +57,7 @@ import sys
 import math
 import os
 import zipfile
-import cStringIO
+from io import StringIO, BytesIO
 import binascii
 import xml.dom.minidom
 import zlib
@@ -70,15 +70,15 @@ except:
     pass
 
 try:
-    import OleFileIO_PL
+    import olefile
 except:
-    print('This program requires module OleFileIO_PL.\nhttp://www.decalage.info/python/olefileio\n')
+    print('This program requires module olefile.\nhttps://github.com/decalage2/olefile\n')
     exit(-1)
 
 dumplinelength = 16
-MALWARE_PASSWORD = 'infected'
-OLEFILE_MAGIC = '\xD0\xCF\x11\xE0'
-ACTIVEMIME_MAGIC = 'ActiveMime'
+MALWARE_PASSWORD = b'infected'
+OLEFILE_MAGIC = b'\xD0\xCF\x11\xE0'
+ACTIVEMIME_MAGIC = b'ActiveMime'
 
 def PrintManual():
     manual = '''
@@ -87,8 +87,8 @@ Manual:
 oledump is a tool to analyze OLE files (also known as Compound File Binary). Many file formats are in fact OLE files, like Microsoft Office files, MSI files, ... Even the new Microsoft Office Open XML format uses OLE files for VBA macros.
 oledump can analyze OLE files directly, or indirectly when then are contained in some form or other (like .docm, .xml, ...).
 
-oledump uses 2 modules that are not part of Python 2: OleFileIO_PL (http://www.decalage.info/python/olefileio) and YARA.
-You need to install the OleFileIO_PL module for this program to work.
+oledump uses 2 modules that are not part of Python 3: olefile (https://github.com/decalage2/olefile) and YARA.
+You need to install the olefile module for this program to work.
 The YARA module is not mandatory if you don't use YARA rules.
 
 Running oledump with a spreadsheet (.xls binary format) lists al the streams found in the OLE file (an OLE file is a virtual filesystem with folders and files, known as streams), like this:
@@ -360,12 +360,10 @@ The return code of oledump is 0, except when you use no options and the analyzed
     for line in manual.split('\n'):
         print(textwrap.fill(line))
 
-#Convert 2 Bytes If Python 3
-def C2BIP3(string):
-    if sys.version_info[0] > 2:
-        return bytes([ord(x) for x in string])
-    else:
-        return string
+def to_bytes(s):
+    if type(s) is str:
+        return bytes([ord(x) for x in s])
+    return s
 
 # CIC: Call If Callable
 def CIC(expression):
@@ -382,65 +380,60 @@ def IFF(expression, valueTrue, valueFalse):
         return CIC(valueFalse)
 
 def File2String(filename):
-    try:
-        f = open(filename, 'rb')
-    except:
-        return None
-    try:
-        return f.read()
-    except:
-        return None
-    finally:
-        f.close()
+    with open(filename, 'rb') as f:
+        try:
+            return f.read()
+        except:
+            return None
 
 class cDumpStream():
     def __init__(self):
-        self.text = ''
+        self.text = b''
 
     def Addline(self, line):
-        if line != '':
-            self.text += line + '\n'
+        if line != b'':
+            self.text += line + b'\n'
 
     def Content(self):
         return self.text
 
 def HexDump(data):
     oDumpStream = cDumpStream()
-    hexDump = ''
+    hexDump = b''
     for i, b in enumerate(data):
-        if i % dumplinelength == 0 and hexDump != '':
+        if i % dumplinelength == 0 and hexDump != b'':
             oDumpStream.Addline(hexDump)
-            hexDump = ''
-        hexDump += IFF(hexDump == '', '', ' ') + '%02X' % ord(b)
+            hexDump = b''
+        hexDump += IFF(hexDump == b'', b'', b' ') + b'%02X' % ord(b)
     oDumpStream.Addline(hexDump)
     return oDumpStream.Content()
 
 def CombineHexAscii(hexDump, asciiDump):
-    if hexDump == '':
-        return ''
-    return hexDump + '  ' + (' ' * (3 * (dumplinelength - len(asciiDump)))) + asciiDump
+    if hexDump == b'':
+        return b''
+    return hexDump + b'  ' + (b' ' * (3 * (dumplinelength - len(asciiDump)))) + asciiDump
 
 def HexAsciiDump(data):
     oDumpStream = cDumpStream()
-    hexDump = ''
-    asciiDump = ''
+    hexDump = b''
+    asciiDump = b''
     for i, b in enumerate(data):
         if i % dumplinelength == 0:
-            if hexDump != '':
+            if hexDump != b'':
                 oDumpStream.Addline(CombineHexAscii(hexDump, asciiDump))
-            hexDump = '%08X:' % i
+            hexDump = b'%08X:' % i
             asciiDump = ''
-        hexDump+= ' %02X' % ord(b)
-        asciiDump += IFF(ord(b) >= 32, b, '.')
+        hexDump+= b' %02X' % ord(b)
+        asciiDump += IFF(ord(b) >= 32, b, b'.')
     oDumpStream.Addline(CombineHexAscii(hexDump, asciiDump))
     return oDumpStream.Content()
 
 #Fix for http://bugs.python.org/issue11395
 def StdoutWriteChunked(data):
-    while data != '':
-        sys.stdout.write(data[0:10000])
+    while data != b'':
+        sys.stdout.buffer.write(data[0:10000])
         try:
-            sys.stdout.flush()
+            sys.stdout.buffer.flush()
         except IOError:
             return
         data = data[10000:]
@@ -494,7 +487,7 @@ def DecompressChunk(compressedChunk):
             if len(token) == 1:
                 decompressedChunk += token
             else:
-                if decompressedChunk == '':
+                if decompressedChunk == b'':
                     return None, None
                 numberOfOffsetBits = OffsetBits(decompressedChunk)
                 copyToken = ord(token[0]) + ord(token[1]) * 0x100
@@ -526,9 +519,9 @@ def Decompress(compressedData):
     return decompressed
 
 def FindCompression(data):
-    searchString = '\x00Attribut'
+    searchString = b'\x00Attribut'
     position = data.find(searchString)
-    if position != -1 and data[position + len(searchString)] == 'e':
+    if position != -1 and data[position + len(searchString)] == b'e':
         position = -1
     return position
 
@@ -564,7 +557,7 @@ def ReadDWORD(data):
     return ord(data[0]) + ord(data[1]) *0x100 + ord(data[2]) *0x10000 + ord(data[3]) *0x1000000, data[4:]
 
 def ReadNullTerminatedString(data):
-    position = data.find('\x00')
+    position = data.find(b'\x00')
     if position == -1:
         return None, None
     return data[:position], data[position + 1:]
@@ -611,22 +604,13 @@ def Info(data):
         return 'Error: extraction failed'
     return 'String 1: %s\nString 2: %s\nString 3: %s\nSize embedded file: %d\n' % (result[0], result[1], result[2], len(result[3]))
 
-def IfWIN32SetBinary(io):
-    if sys.platform == 'win32':
-        import msvcrt
-        msvcrt.setmode(io.fileno(), os.O_BINARY)
 
 def File2Strings(filename):
-    try:
-        f = open(filename, 'r')
-    except:
-        return None
-    try:
-        return map(lambda line:line.rstrip('\n'), f.readlines())
-    except:
-        return None
-    finally:
-        f.close()
+    with open(filename, 'rb') as f:
+        try:
+            return map(lambda line: line.rstrip(b'\n'), f.readlines())
+        except:
+            return None
 
 def ProcessAt(argument):
     if argument.startswith('@'):
@@ -636,7 +620,7 @@ def ProcessAt(argument):
         else:
             return strings
     else:
-        return [argument]
+        return [bytes([ord(x) for x in argument])]
 
 def AddPlugin(cClass):
     global plugins
@@ -662,7 +646,7 @@ def LoadPlugins(plugins, verbose):
                     scriptPlugin = os.path.join(scriptPath, plugin)
                     if os.path.exists(scriptPlugin):
                         plugin = scriptPlugin
-            exec open(plugin, 'r') in globals(), globals()
+            exec(open(plugin, 'r') in globals(), globals())
         except Exception as e:
             print('Error loading plugin: %s' % plugin)
             if verbose:
@@ -689,7 +673,7 @@ def LoadDecoders(decoders, verbose):
                     scriptDecoder = os.path.join(scriptPath, decoder)
                     if os.path.exists(scriptDecoder):
                         decoder = scriptDecoder
-            exec open(decoder, 'r') in globals(), globals()
+            exec(open(decoder, 'r') in globals(), globals())
         except Exception as e:
             print('Error loading decoder: %s' % decoder)
             if verbose:
@@ -719,15 +703,15 @@ def DecodeFunction(decoders, options, stream):
     return decoders[0](stream, options.decoderoptions).Decode()
 
 def MacrosContainsOnlyAttributesOrOptions(stream):
-    lines = SearchAndDecompress(stream).split('\n')
+    lines = SearchAndDecompress(stream).split(b'\n')
     for line in [line.strip() for line in lines]:
-        if line != '' and not line.startswith('Attribute ') and not line == 'Option Explicit':
+        if line != b'' and not line.startswith(b'Attribute ') and not line == b'Option Explicit':
             return False
     return True
 
 #https://msdn.microsoft.com/en-us/library/windows/desktop/dd317756%28v=vs.85%29.aspx
 dCodepages = {
-    037: 'IBM EBCDIC US-Canada',
+    37: 'IBM EBCDIC US-Canada',
     437: 'OEM United States',
     500: 'IBM EBCDIC International',
     708: 'Arabic (ASMO 708)',
@@ -905,7 +889,7 @@ def FindAll(data, sub):
         start = position + 1
 
 def HeuristicDecompress(data):
-    for position in FindAll(data, '\x78'):
+    for position in FindAll(data, b'\x78'):
         try:
             return zlib.decompress(data[position:])
         except:
@@ -1004,10 +988,12 @@ def OLESub(ole, prefix, rules, options):
                         for result in rules.match(data=oDecoder.Decode()):
                             print('               YARA rule%s: %s' % (IFF(oDecoder.Name() == '', '', ' (stream decoder: %s)' % oDecoder.Name()), result.rule))
                             if options.yarastrings:
-                                for stringdata in result.strings:
-                                    print('               %06x %s:' % (stringdata[0], stringdata[1]))
-                                    print('                %s' % binascii.hexlify(C2BIP3(stringdata[2])))
-                                    print('                %s' % repr(stringdata[2]))
+                                for offset, ident, bData in result.strings:
+                                    zpadded = f'{offset:06}'
+                                    print(f'{zpadded:>21}' + f'  {ident}:')
+                                    print(f'                {d.hex()}')
+                                    print(f'                {repr(d)}')
+                                    
     else:
         if len(decoders) > 1:
             print('Error: provide only one decoder when using option select')
@@ -1018,7 +1004,6 @@ def OLESub(ole, prefix, rules, options):
             DecompressFunction = lambda x:x
         if options.dump:
             DumpFunction = lambda x:x
-            IfWIN32SetBinary(sys.stdout)
         elif options.hexdump:
             DumpFunction = HexDump
         elif options.vbadecompress:
@@ -1028,7 +1013,6 @@ def OLESub(ole, prefix, rules, options):
                 DumpFunction = SearchAndDecompress
         elif options.extract:
             DumpFunction = Extract
-            IfWIN32SetBinary(sys.stdout)
         elif options.info:
             DumpFunction = Info
         else:
@@ -1068,8 +1052,7 @@ def OLEDump(filename, options):
 
     if options.raw:
         if filename == '':
-            IfWIN32SetBinary(sys.stdin)
-            data = sys.stdin.read()
+            data = sys.stdin.buffer.read()
         else:
             data = File2String(filename)
         if options.vbadecompress:
@@ -1108,24 +1091,21 @@ def OLEDump(filename, options):
         rules = YARACompile(options.yara)
 
     if filename == '':
-        IfWIN32SetBinary(sys.stdin)
-        oStringIO = cStringIO.StringIO(sys.stdin.read())
+        oStringIO = BytesIO(sys.stdin.buffer.read())
     elif filename.lower().endswith('.zip'):
-        oZipfile = zipfile.ZipFile(filename, 'r')
-        oZipContent = oZipfile.open(oZipfile.infolist()[0], 'r', C2BIP3(MALWARE_PASSWORD))
-        oStringIO = cStringIO.StringIO(oZipContent.read())
-        oZipContent.close()
-        oZipfile.close()
+        with zipfile.ZipFile(filename, 'r') as oZipfile:
+            with oZipfile.open(oZipfile.infolist()[0], 'r', MALWARE_PASSWORD) as oZipContentt:
+                oStringIO = BytesIO(oZipContent.read())
     else:
-        oStringIO = cStringIO.StringIO(open(filename, 'rb').read())
+        oStringIO = BytesIO(open(filename, 'rb').read())
 
     magic = oStringIO.read(6)
     oStringIO.seek(0)
     if magic[0:4] == OLEFILE_MAGIC:
-        ole = OleFileIO_PL.OleFileIO(oStringIO)
+        ole = olefile.OleFileIO(oStringIO)
         returnCode = OLESub(ole, '', rules, options)
         ole.close()
-    elif magic[0:2] == 'PK':
+    elif magic[0:2] == b'PK':
         oZipfile = zipfile.ZipFile(oStringIO, 'r')
         counter = 0
         for info in oZipfile.infolist():
@@ -1137,7 +1117,7 @@ def OLEDump(filename, options):
                 if options.select == '':
                     if not options.quiet:
                         print('%s: %s' % (letter, info.filename))
-                ole = OleFileIO_PL.OleFileIO(cStringIO.StringIO(content))
+                ole = olefile.OleFileIO(BytesIO(content))
                 returnCode = OLESub(ole, letter, rules, options)
                 ole.close()
             oZipContent.close()
@@ -1145,7 +1125,7 @@ def OLEDump(filename, options):
     else:
         data = oStringIO.read()
         oStringIO.seek(0)
-        if '<?xml' in data:
+        if b'<?xml' in data:
             oXML = xml.dom.minidom.parse(oStringIO)
             counter = 0
             for oElement in oXML.getElementsByTagName('*'):
@@ -1153,9 +1133,9 @@ def OLEDump(filename, options):
                     try:
                         data = binascii.a2b_base64(oElement.firstChild.nodeValue)
                     except binascii.Error:
-                        data = ''
+                        data = b''
                     except UnicodeEncodeError:
-                        data = ''
+                        data = b''
                     content = data
                     if content.startswith(ACTIVEMIME_MAGIC):
                         content = HeuristicDecompress(content)
@@ -1170,13 +1150,13 @@ def OLEDump(filename, options):
                                         nameValue = value
                                         break
                                 print('%s: %s' % (letter, nameValue))
-                        ole = OleFileIO_PL.OleFileIO(cStringIO.StringIO(content))
+                        ole = olefile.OleFileIO(BytesIO(content))
                         returnCode = OLESub(ole, letter, rules, options)
                         ole.close()
         elif data.startswith(ACTIVEMIME_MAGIC):
             content = HeuristicDecompress(data)
             if content[0:4] == OLEFILE_MAGIC:
-                ole = OleFileIO_PL.OleFileIO(cStringIO.StringIO(content))
+                ole = olefile.OleFileIO(BytesIO(content))
                 returnCode = OLESub(ole, '', rules, options)
                 ole.close()
         else:

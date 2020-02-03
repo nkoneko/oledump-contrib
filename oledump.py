@@ -442,7 +442,7 @@ def PrintableName(fname):
     return repr('/'.join(fname))
 
 def ParseTokenSequence(data):
-    flags = ord(data[0])
+    flags = data[0]
     data = data[1:]
     result = []
     for mask in [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80]:
@@ -451,7 +451,7 @@ def ParseTokenSequence(data):
                 result.append(data[0:2])
                 data = data[2:]
             else:
-                result.append(data[0])
+                result.append(data[0:1])
                 data = data[1:]
     return result, data
 
@@ -472,7 +472,7 @@ def Bin(number):
 def DecompressChunk(compressedChunk):
     if len(compressedChunk) < 2:
         return None, None
-    header = ord(compressedChunk[0]) + ord(compressedChunk[1]) * 0x100
+    header = compressedChunk[0] + compressedChunk[1] * 0x100
     size = (header & 0x0FFF) + 3
     flagCompressed = header & 0x8000
     data = compressedChunk[2:2 + size - 2]
@@ -480,7 +480,7 @@ def DecompressChunk(compressedChunk):
     if flagCompressed == 0:
         return data, compressedChunk[size:]
 
-    decompressedChunk = ''
+    decompressedChunk = b''
     while len(data) != 0:
         tokens, data = ParseTokenSequence(data)
         for token in tokens:
@@ -490,7 +490,7 @@ def DecompressChunk(compressedChunk):
                 if decompressedChunk == b'':
                     return None, None
                 numberOfOffsetBits = OffsetBits(decompressedChunk)
-                copyToken = ord(token[0]) + ord(token[1]) * 0x100
+                copyToken = token[0] + token[1] * 0x100
                 offset = 1 + (copyToken >> (16 - numberOfOffsetBits))
                 length = 3 + (((copyToken << numberOfOffsetBits) & 0xFFFF) >> numberOfOffsetBits)
                 copy = decompressedChunk[-offset:]
@@ -507,10 +507,10 @@ def DecompressChunk(compressedChunk):
     return decompressedChunk, compressedChunk[size:]
 
 def Decompress(compressedData):
-    if compressedData[0] != chr(1):
+    if compressedData[0] != 1:
         return None
     remainder = compressedData[1:]
-    decompressed = ''
+    decompressed = b''
     while len(remainder) != 0:
         decompressedChunk, remainder = DecompressChunk(remainder)
         if decompressedChunk == None:
@@ -521,7 +521,7 @@ def Decompress(compressedData):
 def FindCompression(data):
     searchString = b'\x00Attribut'
     position = data.find(searchString)
-    if position != -1 and data[position + len(searchString)] == b'e':
+    if position != -1 and data[position + len(searchString)] == 101:
         position = -1
     return position
 
@@ -549,12 +549,12 @@ def SearchAndDecompress(data):
 def ReadWORD(data):
     if len(data) < 2:
         return None, None
-    return ord(data[0]) + ord(data[1]) *0x100, data[2:]
+    return data[0] + data[1] *0x100, data[2:]
 
 def ReadDWORD(data):
     if len(data) < 4:
         return None, None
-    return ord(data[0]) + ord(data[1]) *0x100 + ord(data[2]) *0x10000 + ord(data[3]) *0x1000000, data[4:]
+    return data[0] + data[1] *0x100 + data[2] *0x10000 + data[3] *0x1000000, data[4:]
 
 def ReadNullTerminatedString(data):
     position = data.find(b'\x00')
@@ -601,8 +601,8 @@ def Extract(data):
 def Info(data):
     result = ExtractOle10Native(data)
     if result == []:
-        return 'Error: extraction failed'
-    return 'String 1: %s\nString 2: %s\nString 3: %s\nSize embedded file: %d\n' % (result[0], result[1], result[2], len(result[3]))
+        return b'Error: extraction failed'
+    return ('String 1: %s\nString 2: %s\nString 3: %s\nSize embedded file: %d\n' % (result[0], result[1], result[2], len(result[3]))).encode('utf-8')
 
 
 def File2Strings(filename):
